@@ -10,7 +10,7 @@
 ###############################################################################
 """
 
-SERVICE_ID = "mirror-leech-bot"
+SERVICE_ID = "telegram ABC bot"
 START_COMMAND = "python main.py"
 
 # --- Infrastructure & Database Naming Layout ---
