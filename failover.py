@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
 ###############################################################################
-# PRODUCTION-READY HIGH-AVAILABILITY PROCESS WATCHDOG
+# PRODUCTION-READY AUTOMATIC HIGH-AVAILABILITY PROCESS WATCHDOG
 #
-# Core Mechanics:
-# 1. Reliable, cross-platform process isolation (POSIX & Windows).
-# 2. Strict remote server-side clock evaluation using $currentDate.
-# 3. Directory-derived node identity tracking using the script path.
+# Configuration Rule:
+# Only 'MONGO_URI' inside your .env file is strictly mandatory.
+#
+# All other settings are automatically calculated using fallback code logic
+# if left blank or unmodified below.
 ###############################################################################
 """
 
-SERVICE_ID = "telegram ABC bot"
-START_COMMAND = "python main.py"
+# --- OPTIONAL MANUAL OVERRIDES ---
+# Leave empty ("") to let the script auto-detect these based on your folder structure!
+SERVICE_ID = ""       # Autodetects to '[folder_name]-[path_hash]' if left blank
+START_COMMAND = ""    # Autodetects interpreter path + common targets if left blank
 
-# --- Infrastructure & Database Naming Layout ---
+# --- Infrastructure & Database Configuration ---
 DATABASE_NAME = "Failover"
 COLLECTION_NAME = "Services"
 
@@ -42,24 +45,53 @@ import pymongo
 from pymongo.errors import PyMongoError, ConnectionFailure, DuplicateKeyError
 
 # ---------------------------------------------------------------------------
-# 1. ENVIRONMENT & DETERMINISTIC NODE IDENTITY INITIALIZATION
+# 1. ENVIRONMENT & DETECTIVE IDENTITY INITIALIZATION
 # ---------------------------------------------------------------------------
 load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 IS_WINDOWS = platform.system() == "Windows"
 
-# Always points to the explicit folder containing failover.py, regardless of execution working directory
-PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
-HOSTNAME = socket.gethostname()
-
-# Explicit, fully human-readable identity string for straightforward debugging
-NODE_ID = f"{HOSTNAME}:{PROJECT_PATH}"
-
-if not SERVICE_ID.strip() or not START_COMMAND.strip() or not MONGO_URI or not MONGO_URI.strip():
-    print("CRITICAL CONFIGURATION ERROR: Missing core environment variables!", file=sys.stderr)
+# 1. Mandatory validation check
+if not MONGO_URI or not MONGO_URI.strip():
+    print("CRITICAL CONFIGURATION ERROR: 'MONGO_URI' is missing from the environment (.env)!", file=sys.stderr)
+    print("Please add 'MONGO_URI=your_mongodb_connection_string' to your .env file.", file=sys.stderr)
     sys.exit(1)
 
-# Detect runtime host environment purely for informational context
+# 2. Get deterministic script directory location (resolving symlinks/junctions via realpath)
+PROJECT_PATH = os.path.realpath(os.path.dirname(__file__))
+FOLDER_NAME = os.path.basename(PROJECT_PATH)
+HOSTNAME = socket.gethostname()
+
+# Generate an unalterable short hash of the absolute project location path
+PATH_HASH = hashlib.sha1(PROJECT_PATH.encode('utf-8')).hexdigest()[:8]
+
+# 3. Dynamic Smart Configuration Discovery Fallbacks
+if not SERVICE_ID.strip():
+    # Folder name combined with absolute path hash isolates separate clones on the same PC
+    clean_folder = FOLDER_NAME.lower().replace('_', '-').replace(' ', '-')
+    SERVICE_ID = f"{clean_folder}-{PATH_HASH}-service"
+
+if not START_COMMAND.strip():
+    # Detect common deployment script targets implicitly
+    possible_entry_points = ["main.py", "bot.py", "app.py"]
+    detected_target = None
+    
+    for filename in possible_entry_points:
+        if os.path.exists(os.path.join(PROJECT_PATH, filename)):
+            detected_target = filename
+            break
+            
+    if detected_target:
+        # Uses sys.executable to lock the execution context to the active venv/conda interpreter
+        START_COMMAND = f'"{sys.executable}" "{detected_target}"'
+    else:
+        # Final fallback fallback if nothing matches
+        START_COMMAND = f'"{sys.executable}" "main.py"'
+
+# Unique identifier mapping this specific folder path instance on this server machine
+NODE_ID = f"{HOSTNAME}:{PROJECT_PATH}"
+
+# Detect runtime host platform environment purely for informational context logs
 if os.getenv("PYCHARM_HOSTED"):
     IDE_CONTEXT = "PyCharm"
 elif os.getenv("VSCODE_PID"):
@@ -67,7 +99,7 @@ elif os.getenv("VSCODE_PID"):
 else:
     IDE_CONTEXT = "Terminal/Shell"
 
-# Configuration fingerprint to prevent cross-project configuration collisions
+# Unique configuration hash matrix signature used to protect cluster alignment parity
 CONFIG_PAYLOAD = f"{START_COMMAND.strip()}|{HEARTBEAT_INTERVAL}|{HEARTBEAT_TIMEOUT}"
 CONFIG_FINGERPRINT = hashlib.sha256(CONFIG_PAYLOAD.encode('utf-8')).hexdigest()
 
@@ -88,12 +120,12 @@ child_process = None
 is_running = True
 db_disconnect_tracker = None
 
-# Establish single, long-lived MongoClient connection pool
+# Open single long-lived, auto-pooling connection instance client
 try:
     mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000, retryReads=True, retryWrites=True)
     db_collection = mongo_client[DATABASE_NAME][COLLECTION_NAME]
 except Exception as init_err:
-    print(f"CRITICAL: Failed to initialize PyMongo pool: {init_err}", file=sys.stderr)
+    print(f"CRITICAL: Failed to initialize PyMongo client structure pool: {init_err}", file=sys.stderr)
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
@@ -114,7 +146,6 @@ def terminate_child():
         logger.info("Terminating the managed application process tree...")
         if IS_WINDOWS:
             try:
-                # Forceful, recursive child-tree termination via native Windows CLI
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(child_process.pid)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             except Exception as e:
@@ -138,12 +169,11 @@ def terminate_child():
 # 3. TRANSITIONAL LEADER ELECTORATE
 # ---------------------------------------------------------------------------
 def setup_database_indexes():
-    """Runs exactly once during startup initialization path."""
     try:
         db_collection.create_index([("owner_node_id", pymongo.ASCENDING)], background=True)
         return True
     except PyMongoError as e:
-        logger.error(f"Failed to optimize indexing configuration: {e}")
+        logger.error(f"Failed to optimize indexing configuration layouts: {e}")
         return False
 
 def bootstrap_and_validate_lock():
@@ -166,7 +196,11 @@ def bootstrap_and_validate_lock():
             return True
 
         if doc.get("config_fingerprint") != CONFIG_FINGERPRINT:
-            logger.critical("🚨 CONFIGURATION FINGERPRINT MISMATCH! Execution immediately halted.")
+            logger.critical(
+                f"🚨 CONFIGURATION FINGERPRINT MISMATCH!\n"
+                f"Another server node registered SERVICE_ID '{SERVICE_ID}' using different timing parameters or script calls.\n"
+                f"Execution immediately halted to prevent cluster split-brain collisions."
+            )
             sys.exit(1)
             
         return True
@@ -201,7 +235,6 @@ def try_acquire_or_maintain_leadership(force_check_only=False):
             db_disconnect_tracker = None 
             return doc and doc.get("owner_node_id") == NODE_ID
 
-        # Highly compatible standard expression evaluation matching server-side time threshold
         filter_query = {
             "_id": SERVICE_ID,
             "$expr": {
@@ -222,6 +255,7 @@ def try_acquire_or_maintain_leadership(force_check_only=False):
                 "status": "active",
                 "config_fingerprint": CONFIG_FINGERPRINT,
                 "project_path": PROJECT_PATH,
+                "python_interpreter": sys.executable,
                 "runtime_context": IDE_CONTEXT
             },
             "$currentDate": {
@@ -252,7 +286,14 @@ def try_acquire_or_maintain_leadership(force_check_only=False):
 def main():
     global child_process, is_running
     
-    print(f"HA WATCHDOG ACTIVE | Service: {SERVICE_ID} | Node: {NODE_ID} ({IDE_CONTEXT})\n", flush=True)
+    print(f"======================================================================", flush=True)
+    print(f"🔥 HA WATCHDOG ACTIVE | Engine: v{platform.python_version()}", flush=True)
+    print(f"Service ID : {SERVICE_ID}", flush=True)
+    print(f"Node ID    : {NODE_ID} ({IDE_CONTEXT})", flush=True)
+    print(f"Interpreter: {sys.executable}", flush=True)
+    print(f"Command    : {START_COMMAND}", flush=True)
+    print(f"======================================================================\n", flush=True)
+    
     time.sleep(random.uniform(0.5, 3.5))
 
     if not setup_database_indexes() or not bootstrap_and_validate_lock():
@@ -271,7 +312,6 @@ def main():
                     time.sleep(CHECK_INTERVAL)
                     continue
                 
-                # Double-check configuration stability right upon capturing leadership state
                 if not bootstrap_and_validate_lock():
                     release_leadership()
                     time.sleep(CHECK_INTERVAL)
@@ -304,7 +344,6 @@ def main():
 
                     logger.info(f"Executing application: {cmd_args}")
                     try:
-                        # Achieves clean, parallel process-tree isolation on both Windows and POSIX variants
                         if IS_WINDOWS:
                             child_process = subprocess.Popen(
                                 cmd_args, 
@@ -339,7 +378,6 @@ def main():
                 # --- STEADY-STATE RUNTIME OPERATION ---
                 current_time = time.time()
                 
-                # Check for split-brain scenario every second
                 if not try_acquire_or_maintain_leadership(force_check_only=True):
                     logger.critical("🚨 STALE OWNER DETECTED: Node identity overtaken by cluster! Stopping local application.")
                     terminate_child()
@@ -357,7 +395,7 @@ def main():
                             terminate_child()
                             is_leader = False
                     else:
-                        logger.warning("Supervised process died inside the scheduled pulse window.")
+                        logger.warning("Supervised process dead inside the scheduled pulse window.")
 
                 time.sleep(1)
 
@@ -375,4 +413,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
