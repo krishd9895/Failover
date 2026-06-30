@@ -321,8 +321,9 @@ def try_acquire_or_maintain_leadership(force_check_only=False, update_telemetry=
                 "hostname": HOSTNAME
             })
 
+        # CRITICAL FIX: upsert=False prevents QueryFeatureNotAllowed exception on $expr parameters
         result = db_collection.find_one_and_update(
-            filter_query, update_modifier, upsert=True, return_document=pymongo.ReturnDocument.AFTER
+            filter_query, update_modifier, upsert=False, return_document=pymongo.ReturnDocument.AFTER
         )
         db_disconnect_tracker = None 
         return result and result.get("owner_node_id") == NODE_ID
@@ -345,7 +346,7 @@ def main():
     print(f"======================================================================", flush=True)
     print(f"🔥 HA PROCESS WATCHDOG ACTIVE | Mode: {LAUNCH_MODE}", flush=True)
     print(f"Service ID : {SERVICE_ID}", flush=True)
-    print(f"NODE ALIAS : {NODE_ALIAS}", flush=True) # Explicit key used for manual overrides
+    print(f"NODE ALIAS : {NODE_ALIAS}", flush=True) 
     print(f"Vector     : {final_exec_args}", flush=True)
     print(f"======================================================================\n", flush=True)
     
